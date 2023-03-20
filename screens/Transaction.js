@@ -3,7 +3,7 @@ import React, {Component, useEffect} from "react";
 import {View,Text,StyleSheet, TouchableOpacity,TextInput,ImageBackground, Alert, KeyboardAvoidingView} from "react-native";
 import {BarCodeScanner} from "expo-barcode-scanner";
 import db from "../config";
-import { collection,addDoc, getDocs, doc, query,where, updateDoc, serverTimestamp,increment } from "firebase/firestore";
+import { collection,addDoc, getDocs, doc, query,where, updateDoc, serverTimestamp,increment, limit } from "firebase/firestore";
 
 
 
@@ -61,28 +61,30 @@ export default class TransactionScreen extends Component{
         await this.getBookDetails(bookId);
         await this.getStudentDetails(studentId);
 
-        const q = query(collection(db,"books"),where("book_id","==",bookId.trim()))
-        const querySnapshot = await(getDocs(q));
-        if(!querySnapshot.empty){
-            querySnapshot.forEach((doc) => {
-                var book = doc.data();
-                if(book.is_book_available){
-                    console.log(`${doc.id} => ${doc.data().is_book_available}`);
-                    var{bookName,studentName} = this.state;
-                    this.initiateBookIssue(bookId,studentId,bookName,studentName);
-                    Alert.alert("Livro entregue ao aluno!");
-                }else{
-                    var{bookName,studentName} = this.state;
-                    this.initiateBookReturn(bookId,studentId,bookName,studentName);
-                    Alert.alert("Livro devolvido à biblioteca!");
-                }
-                
-            });
-        }else{
-            Alert.alert("Ocorreu um erro ao consultar o livro!");
-        }
+        var transactionType = await this.checkBookAvailability(bookId);
 
-       
+        if(!transactionType){
+            this.setState({
+                bookId:"",
+                studentId:""
+            });
+            Alert.alert("O livro não existe no banco de dados da biblioteca");
+        }else if(transactionType === "issue"){
+            var isEligible = await this.checkStudentEligibilityForBookIssue(studentId);
+            if(isEligible){
+                var {bookName,studentName} = this.state;
+                this.initiateBookIssue(bookId,studentId,bookName,studentName);
+                Alert.alert("Livro entregue ao aluno!");
+            }
+        }else if(transactionType === "return"){
+            var isEligible = await this.checkStudentEligibilityForBookReturn(bookId,studentId);
+            
+            if(isEligible){
+                var {bookName,studentName} = this.state;
+                this.initiateBookReturn(bookId,studentId,bookName,studentName);
+                Alert.alert("Livro devolvido à biblioteca!");
+            }
+        }
     };
 
 
@@ -123,9 +125,9 @@ export default class TransactionScreen extends Component{
        //adicionar transação
        try {
             const docRef = await addDoc(collection(db, "transactions"), {
-            student_id:studentId,
+            student_id:studentId.trim(),
             student_name:studentName,
-            book_id:bookId,
+            book_id:bookId.trim(),
             book_name:bookName,
             date:serverTimestamp(),
             transaction_type:"issue"
@@ -201,7 +203,101 @@ export default class TransactionScreen extends Component{
        });
 
     };
+    checkBookAvailability = async(bookId) =>{
+        const q = query(collection(db,"books"),where("book_id","==",bookId.trim()))
+        
+        const querySnapshot = await(getDocs(q));
+        var transactionType = "";
+        if(!querySnapshot.empty){
+            querySnapshot.forEach((doc) => {
+                //se o livro estiver disponível, o tipo de transação
+                //será issue (emprestar), senão será return(devolver)
+                transactionType = doc.data().is_book_available?"issue":"return";
+                
+    
+            });
+        }else{
+            transactionType = false;
+            Alert.alert("Livro não encontrado!");
+        }
+        return transactionType;
+    };
 
+    checkStudentEligibilityForBookIssue = async(studentId) =>{
+        const q = query(collection(db,"students"),where("student_id","==",studentId.trim()))
+        
+        const querySnapshot = await(getDocs(q));
+
+        var isStudentEligible = "";
+
+        if(querySnapshot.empty){
+            this.setState({
+                bookId:"",
+                studentId:""
+            });
+            isStudentEligible = false;
+            Alert.alert("O ID do aluno não foi encontrado!");
+
+        }else{
+            querySnapshot.forEach((doc) => {
+                //se o livro estiver disponível, o tipo de transação
+                //será issue (emprestar), senão será return(devolver)
+                if(doc.data().number_of_books_issued < 2){
+                    isStudentEligible = true;
+                }else{
+                    isStudentEligible = false;
+                    Alert.alert("O aluno já retirou 2 livros!");
+                    this.setState({
+                        bookId:"",
+                        studentId:""
+                    });
+                }
+                
+    
+            });
+        }
+        return isStudentEligible;
+
+    };
+
+    checkStudentEligibilityForBookReturn = async(bookId,studentId) =>{
+        const q = query(collection(db,"transactions"),where("book_id","==",bookId.trim()),limit(1));
+        
+        const querySnapshot = await(getDocs(q));
+
+        var isStudentEligible = "";
+
+        if(querySnapshot.empty){
+            this.setState({
+                bookId:"",
+                studentId:""
+            });
+            isStudentEligible = false;
+            Alert.alert("Não foi encontrado o registro da transação");
+
+        }else{
+            querySnapshot.forEach((doc) => {
+                //se o livro estiver disponível, o tipo de transação
+                //será issue (emprestar), senão será return(devolver)
+                var lastBookTransaction = doc.data();
+                console.log(doc.data());
+                if(lastBookTransaction.student_id === studentId.trim()){
+                    isStudentEligible = true;
+                }else{
+                    isStudentEligible = false;
+                    Alert.alert("O livro não foi retirado por esse aluno!");
+                    this.setState({
+                        bookId:"",
+                        studentId:""
+                    });
+                }
+                
+    
+            });
+        }
+        return isStudentEligible;
+
+    };
     render(){
         const {domState, hasCameraPermissions, scannedData, scanned, bookId, studentId} = this.state;
         if(domState !== "normal"){
